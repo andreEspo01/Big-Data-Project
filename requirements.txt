@@ -7,3 +7,5 @@ seaborn
 scikit-learn
 umap-learn
 networkx
+neo4j
+
