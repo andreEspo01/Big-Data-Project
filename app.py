@@ -3,69 +3,99 @@ import pandas as pd
 import plotly.express as px
 import networkx as nx
 import matplotlib.pyplot as plt
-import numpy as np
+from neo4j import GraphDatabase
 
 # =============================
-# GENERAZIONE DATI DI TEST
+# CONFIGURAZIONE DATABASE
 # =============================
-@st.cache_data
-def load_data():
-    np.random.seed(42)
-    n_posts = 100
-    n_users = 20
-    communities = ["A", "B", "C"]
+NEO4J_URI = "bolt://localhost:7687"
+NEO4J_USER = "neo4j"
+NEO4J_PASSWORD = "password"  # cambia con la tua password
 
-    df = pd.DataFrame({
-        "post_id": range(1, n_posts + 1),
-        "user_id": np.random.randint(1, n_users + 1, size=n_posts),
-        "parent_user_id": np.random.randint(1, n_users + 1, size=n_posts),
-        "community": np.random.choice(communities, size=n_posts),
-        "publish_date_only": pd.date_range("2025-01-01", periods=n_posts, freq="D"),
-        "sentiment_dominant_roberta": np.random.choice(["positive", "neutral", "negative"], size=n_posts),
-        "emotion_dominant": np.random.choice(["joy", "anger", "sadness", "fear"], size=n_posts)
-    })
+@st.cache_data(ttl=600)
+def load_data_from_neo4j(topic_label='politics'):
+    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+    # Connessione al database predefinito "neo4j"
+    with driver.session() as session:
+        query = f"""
+        MATCH (td:TopicDisplay {{topic_label: '{topic_label}'}})
+        MATCH (pd:PostDisplay)-[:TALKS_ABOUT]->(td)
+        MATCH (ud:UserDisplay)-[:WROTE]->(pd)
+        OPTIONAL MATCH (pd)-[:REPLIED_TO]->(parent:PostDisplay)
+        RETURN ud.username AS username,
+               pd.post_id AS post_id,
+               parent.post_id AS parent_post_id,
+               td.topic_label AS topic
+        LIMIT 100
+        """
+        result = session.run(query)
+        df = pd.DataFrame([record.data() for record in result])
+    driver.close()
     return df
 
-df = load_data()
+# =============================
+# SELEZIONE TOPIC
+# =============================
+topic_filter = st.sidebar.text_input("Topic da visualizzare", value="politics")
 
+# =============================
+# CARICAMENTO DATI
+# =============================
+try:
+    df = load_data_from_neo4j(topic_label=topic_filter)
+    if df.empty:
+        st.warning("Il database Neo4j non ha dati per questo topic, verranno usati dati di test.")
+        raise Exception("Empty DB")
+except:
+    st.info("Uso dati di test")
+    import numpy as np
+    np.random.seed(42)
+    n_posts = 20
+    n_users = 5
+    df = pd.DataFrame({
+        "post_id": range(1, n_posts + 1),
+        "username": [f"user{i%5}" for i in range(n_posts)],
+        "parent_post_id": np.random.choice([None]+list(range(1, n_posts)), size=n_posts),
+        "topic": ["politics"]*n_posts
+    })
+
+# =============================
+# CONFIGURAZIONE STREAMLIT
+# =============================
 st.set_page_config(page_title="Social Dashboard", layout="wide")
-st.title("📊 Social Dashboard")
+st.title(f"📊 Social Dashboard - Topic: {topic_filter}")
 
 # =============================
 # SEZIONE 1: Overview
 # =============================
 st.header("1️⃣ Overview")
-st.write("Statistiche generali sul dataset")
-
-col1, col2, col3 = st.columns(3)
-col1.metric("Numero di post", len(df))
-col2.metric("Numero di utenti", df['user_id'].nunique())
-col3.metric("Comunità", df['community'].nunique())
+col1, col2 = st.columns(2)
+col1.metric("Numero di post", df['post_id'].nunique())
+col2.metric("Numero di utenti", df['username'].nunique())
 
 # =============================
-# SEZIONE 2: Sentiment nel tempo
+# SEZIONE 2: Rete utenti (Post -> User)
 # =============================
-st.header("2️⃣ Sentiment nel tempo")
-sentiment_over_time = df.groupby(["publish_date_only", "sentiment_dominant_roberta"]).size().reset_index(name="count")
-fig = px.line(sentiment_over_time, x="publish_date_only", y="count", color="sentiment_dominant_roberta", title="Sentiment Over Time")
-st.plotly_chart(fig, use_container_width=True)
+st.header("2️⃣ Rete di interazioni")
 
-# =============================
-# SEZIONE 3: Emozioni
-# =============================
-st.header("3️⃣ Distribuzione delle emozioni")
-emotion_counts = df["emotion_dominant"].value_counts().reset_index()
-fig = px.bar(emotion_counts, x="index", y="emotion_dominant", title="Distribuzione Emozioni")
-st.plotly_chart(fig, use_container_width=True)
+# Creazione mappatura post_id -> username
+post_to_user = dict(zip(df['post_id'], df['username']))
 
-# =============================
-# SEZIONE 4: Rete utenti
-# =============================
-st.header("4️⃣ Rete di interazioni (esempio semplice)")
-edges = df[["user_id", "parent_user_id"]].dropna().values.tolist()
+# Generazione edge list (username -> parent username)
+edges = df[['username', 'parent_post_id']].dropna().values.tolist()
+edges_mapped = [(post_to_user.get(parent), username) for username, parent in edges if post_to_user.get(parent)]
+
+# Costruzione grafo
 G = nx.DiGraph()
-G.add_edges_from(edges)
+G.add_edges_from(edges_mapped)
 
-plt.figure(figsize=(6, 6))
-nx.draw_networkx(G, with_labels=False, node_size=50, alpha=0.6)
+plt.figure(figsize=(7, 7))
+nx.draw_networkx(
+    G, 
+    with_labels=True, 
+    node_size=500, 
+    node_color="skyblue", 
+    alpha=0.7, 
+    font_size=10
+)
 st.pyplot(plt)
