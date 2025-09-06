@@ -11,7 +11,7 @@ import numpy as np
 # =============================
 # CONFIGURAZIONE DATABASE
 # =============================
-NEO4J_URI = "bolt://localhost:7687"
+NEO4J_URI = "bolt://192.168.1.129:7687"
 NEO4J_USER = "neo4j"
 NEO4J_PASSWORD = "password"  # aggiorna con la tua password
 
